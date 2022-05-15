@@ -5,11 +5,14 @@ import {
   aws_ec2 as ec2,
   aws_ecs as ecs,
   aws_iam as iam,
+  aws_stepfunctions as sfn,
+  aws_stepfunctions_tasks as tasks,
   aws_events as events,
   aws_events_targets as targets,
   Duration
 } from 'aws-cdk-lib';
 import {Construct} from 'constructs';
+import {IntegrationPattern} from "aws-cdk-lib/aws-stepfunctions";
 
 interface SfnTestForScheduledTaskStackProps extends StackProps {
   appClusterInstanceSSHAllowedIP: string;
@@ -85,13 +88,30 @@ export class SfnTestForScheduledTaskStack extends Stack {
       logging: ecs.LogDrivers.awsLogs({ streamPrefix: 'sfn-test-for-scheduled-task/hello-world', logRetention: 3 }),
     });
 
+    // Hello World execution state machine
+    const helloWorldSM = new sfn.StateMachine(this, 'HelloWorldStateMachine', {
+      stateMachineType: sfn.StateMachineType.STANDARD,
+      definition: (() => {
+        const task = new tasks.EcsRunTask(this, 'RunHelloWorld', {
+          cluster: appCluster,
+          launchTarget: new tasks.EcsEc2LaunchTarget(),
+          taskDefinition: helloWorldAppTD,
+          integrationPattern: IntegrationPattern.RUN_JOB,
+        });
+        task.addRetry({
+          errors: ['ECS.AmazonECSException'],
+          maxAttempts: 5,
+          interval: Duration.seconds(30)
+        });
+
+        return task;
+      })(),
+    });
+
     // Regularly Hello World app execution event rule
-    new events.Rule(this, 'RegularlyExecuteHelloWorldTask', {
+    new events.Rule(this, 'RegularlyExecuteHelloWorldStateMachine', {
       schedule: events.Schedule.rate(Duration.minutes(5)),
-      targets: [new targets.EcsTask({
-        cluster: appCluster,
-        taskDefinition: helloWorldAppTD,
-      })],
+      targets: [new targets.SfnStateMachine(helloWorldSM)],
     });
   }
 }
